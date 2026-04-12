@@ -1,0 +1,11 @@
+# ═══════════════════════════════════════
+# DeepSeek V3 — 高性价比推理模型
+# ═══════════════════════════════════════
+
+name: deepseek-v3
+base_url: "https://api.deepseek.com/v1"
+api_key: "${DEEPSEEK_API_KEY}"
+model: "deepseek-chat"
+
+temperature: 0.7
+enable_thinking: false

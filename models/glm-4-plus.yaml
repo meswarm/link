@@ -1,0 +1,11 @@
+# ═══════════════════════════════════════
+# GLM-4 Plus — 智谱清言增强版
+# ═══════════════════════════════════════
+
+name: glm-4-plus
+base_url: "https://open.bigmodel.cn/api/paas/v4"
+api_key: "${ZHIPU_API_KEY}"
+model: "glm-4-plus"
+
+temperature: 0.7
+enable_thinking: false

@@ -1,0 +1,42 @@
+# ═══════════════════════════════════════
+# Link Agent — 测试助手
+# 使用方法: ltool start agents/example.yaml
+# ═══════════════════════════════════════
+
+name: "测试助手"
+
+# 模型
+model: qwen-plus
+
+# 系统提示词（{current_time} 会被 context 自动替换）
+prompt: |
+  你是一个友好的智能助手。当前时间: {current_time}。
+  你可以使用工具来帮助用户完成任务。
+  回复要简洁、准确、友好。如果你不确定答案，请坦诚告知。
+
+# 预置上下文（每次对话前自动调用工具获取数据）
+context:
+  - name: current_time
+    tool: get_current_time
+
+# Matrix 账户（服务器地址在 .env 中配置）
+matrix_user: "@test:localhost"
+matrix_password: "test123"
+rooms:
+  - "!tzndrM7YuJgedEui7fz-XSjGrz-MUwa7EDi7ItukbtU"
+
+# 技能
+skills_dir: "agents/skills"
+
+# 工作目录
+work_dir: "/tmp/link-test"
+
+# 工具
+tools:
+  - type: builtin
+    name: "get_current_time"
+    description: "获取当前的日期和时间"
+
+  - type: builtin
+    name: "get_system_info"
+    description: "获取当前系统的基本信息"

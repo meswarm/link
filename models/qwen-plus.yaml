@@ -1,0 +1,15 @@
+# ═══════════════════════════════════════
+# Qwen Plus — 通义千问增强版
+# ═══════════════════════════════════════
+
+name: qwen-plus
+base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1"
+api_key: "${DASHSCOPE_API_KEY}"
+model: "qwen3.6-plus"
+
+# 模型能力
+vision: true              # 支持图像输入（多模态）
+
+# 默认参数（Agent 配置中可覆盖）
+temperature: 0.7
+enable_thinking: false

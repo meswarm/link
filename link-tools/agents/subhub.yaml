@@ -1,0 +1,262 @@
+# SubHub 接入 Link 的正式配置
+# 启动前请先：
+# 1. 启动 SubHub API: uv run subhub
+#    如果 config.toml 已配置 [webhook]，该进程会同时启用主动提醒
+#    默认监听地址读取 config.toml 中的 [server].host / [server].port
+# 2. 本文件已直接写死 API 地址为 http://127.0.0.1:58000
+#    如果你修改了 config.toml 中的 [server].port，这里也要同步修改
+# 3. 按实际情况填写 Matrix 账户与房间
+
+name: "SubHub 订阅管理助手"
+
+prompt: |
+  你是一个个人订阅管理助手，帮助用户管理各类订阅服务。
+
+  当前日期：{today_context}
+
+  ## 用户当前订阅上下文
+  {subscriptions_context}
+
+  ## 用户常用信息
+  - 常用登录账号：{accounts_context}
+  - 常用支付渠道：{channels_context}
+
+  ## 你的工作规则
+  1. 用户提到新增订阅时，从对话中提取所有必要字段：服务名称、登录账号、支付渠道、金额、货币单位、计费周期、下次扣款日、备注。
+  2. 如果信息不完整，必须追问。追问时优先参考常用账号和常用支付渠道，并给出候选项让用户选择。
+  3. 用户说“今天”“刚才”时，起始日为当前日期；说“昨天”则为前一天；说“X天前”则推算日期；也可能直接指定日期。
+  4. 下次扣款日规则：月付 = 起始日 + 1 个自然月，年付 = +1年，周付 = +7天，日付 = +1天；如果用户明确指定了下次扣款日，则直接使用用户指定值。
+  5. 计费周期如果用户未说明且你不确定，必须追问。
+  6. 永久/买断制订阅的 next_billing_date 设为 null。
+  7. 用户表示“知道了”“已处理”“我会取消”等确认提醒时，调用 dismiss_reminder 工具。
+  8. 删除或修改订阅前，如果存在歧义，先调用查询工具确认目标订阅。
+  9. 回复使用中文，简洁明了。
+  10. 涉及列表、报表、查询结果时，优先直接输出工具返回内容中的 markdown 或结构化结果，保持信息清晰易读。
+  11. 当用户询问“本月花了多少”之类偏实际发生费用的问题时，使用 actual 模式月报；当用户询问“月度预算/每月总费用”时，使用 budget 模式月报。
+
+model: qwen-plus
+
+matrix_user: "@subhub2:localhost"
+matrix_password: "subhub123"
+rooms:
+  - "!7T5MkjIv0oIdq3ZeurUIeJefp8dvcLN6B5jyevJwmZs:localhost"
+
+context:
+  - name: today_context
+    tool: get_today_context
+  - name: subscriptions_context
+    tool: get_subscriptions_context
+  - name: accounts_context
+    tool: get_accounts_context
+  - name: channels_context
+    tool: get_channels_context
+
+skills_dir: "link/agents/skills/manage-subscriptions"
+
+work_dir: "/home/txl/Code/meswarm/subhub"
+
+tools:
+  - type: api
+    name: "get_today_context"
+    description: "获取当前日期上下文。用于系统提示词注入。"
+    endpoint: "http://127.0.0.1:58000/api/context/today"
+    method: GET
+
+  - type: api
+    name: "get_subscriptions_context"
+    description: "获取当前订阅列表上下文。返回订阅 JSON 以及 markdown 表格。用于系统提示词注入。"
+    endpoint: "http://127.0.0.1:58000/api/context/subscriptions"
+    method: GET
+
+  - type: api
+    name: "get_accounts_context"
+    description: "获取用户常用登录账号上下文。"
+    endpoint: "http://127.0.0.1:58000/api/context/accounts"
+    method: GET
+
+  - type: api
+    name: "get_channels_context"
+    description: "获取用户常用支付渠道上下文。"
+    endpoint: "http://127.0.0.1:58000/api/context/channels"
+    method: GET
+
+  - type: api
+    name: "list_subscriptions"
+    description: "查询订阅列表。可按名称模糊搜索，也可按 billing_cycle 过滤。适用于用户查看全部订阅、查找某个服务、确认删除或修改目标。"
+    endpoint: "http://127.0.0.1:58000/api/subscriptions"
+    method: GET
+    parameters:
+      name:
+        type: string
+        description: "服务名称关键词，支持模糊搜索"
+      billing_cycle:
+        type: string
+        description: "计费周期"
+        enum: ["monthly", "yearly", "weekly", "daily", "permanent", "custom"]
+
+  - type: api
+    name: "create_subscription"
+    description: "新增一条订阅记录。必须在信息完整后调用。"
+    endpoint: "http://127.0.0.1:58000/api/subscriptions"
+    method: POST
+    headers:
+      Content-Type: "application/json"
+    body_template:
+      name: "{name}"
+      account: "{account}"
+      payment_channel: "{payment_channel}"
+      amount: "{amount}"
+      currency: "{currency}"
+      billing_cycle: "{billing_cycle}"
+      next_billing_date: "{next_billing_date}"
+      notes: "{notes}"
+    parameters:
+      name:
+        type: string
+        description: "服务名称"
+        required: true
+      account:
+        type: string
+        description: "登录账号"
+        required: true
+      payment_channel:
+        type: string
+        description: "支付渠道"
+        required: true
+      amount:
+        type: string
+        description: "金额，使用数字"
+        required: true
+      currency:
+        type: string
+        description: "货币单位"
+        enum: ["CNY", "USD", "EUR", "GBP", "JPY"]
+        required: true
+      billing_cycle:
+        type: string
+        description: "计费周期"
+        enum: ["monthly", "yearly", "weekly", "daily", "permanent", "custom"]
+        required: true
+      next_billing_date:
+        type: string
+        description: "下次扣款日期，格式 YYYY-MM-DD；永久订阅填 null 或空"
+      notes:
+        type: string
+        description: "备注"
+
+  - type: api
+    name: "update_subscription"
+    description: "更新订阅记录。优先传 id；如果只有名称，也可以用 selector_name。修改前如有歧义，应先查询。"
+    endpoint: "http://127.0.0.1:58000/api/subscriptions/update"
+    method: POST
+    headers:
+      Content-Type: "application/json"
+    body_template:
+      id: "{id}"
+      selector_name: "{selector_name}"
+      name: "{name}"
+      account: "{account}"
+      payment_channel: "{payment_channel}"
+      amount: "{amount}"
+      currency: "{currency}"
+      billing_cycle: "{billing_cycle}"
+      next_billing_date: "{next_billing_date}"
+      notes: "{notes}"
+    parameters:
+      id:
+        type: string
+        description: "订阅 ID，优先使用"
+      selector_name:
+        type: string
+        description: "用于定位订阅的当前服务名称"
+      name:
+        type: string
+        description: "新的服务名称"
+      account:
+        type: string
+        description: "新的登录账号"
+      payment_channel:
+        type: string
+        description: "新的支付渠道"
+      amount:
+        type: string
+        description: "新的金额"
+      currency:
+        type: string
+        description: "新的货币单位"
+        enum: ["CNY", "USD", "EUR", "GBP", "JPY"]
+      billing_cycle:
+        type: string
+        description: "新的计费周期"
+        enum: ["monthly", "yearly", "weekly", "daily", "permanent", "custom"]
+      next_billing_date:
+        type: string
+        description: "新的下次扣款日，格式 YYYY-MM-DD"
+      notes:
+        type: string
+        description: "新的备注"
+
+  - type: api
+    name: "delete_subscription"
+    description: "删除订阅记录。优先传 id；如果只有名称，也可以传 name。删除前如有歧义，应先查询确认。"
+    endpoint: "http://127.0.0.1:58000/api/subscriptions/delete"
+    method: POST
+    headers:
+      Content-Type: "application/json"
+    body_template:
+      id: "{id}"
+      name: "{name}"
+    parameters:
+      id:
+        type: string
+        description: "订阅 ID，优先使用"
+      name:
+        type: string
+        description: "服务名称"
+
+  - type: api
+    name: "generate_monthly_report"
+    description: "生成月报。mode=budget 表示月度预算折算；mode=actual 表示本月实际扣款。"
+    endpoint: "http://127.0.0.1:58000/api/reports/monthly"
+    method: GET
+    parameters:
+      month:
+        type: string
+        description: "月份，格式 YYYY-MM，默认当前月"
+      mode:
+        type: string
+        description: "报表模式"
+        enum: ["budget", "actual"]
+        default: "budget"
+
+  - type: api
+    name: "dismiss_reminder"
+    description: "关闭提醒。target 可为订阅 id、订阅名称或 all。用户确认收到提醒时调用。"
+    endpoint: "http://127.0.0.1:58000/api/reminders/dismiss"
+    method: POST
+    headers:
+      Content-Type: "application/json"
+    body_template:
+      target: "{target}"
+    parameters:
+      target:
+        type: string
+        description: "订阅 id、订阅名称或 all"
+        required: true
+
+  - type: api
+    name: "get_today_reminders"
+    description: "获取当前待提醒订阅。适合用户主动询问近期扣款。"
+    endpoint: "http://127.0.0.1:58000/api/reminders/today"
+    method: GET
+    parameters:
+      advance_days:
+        type: string
+        description: "提前多少天视为提醒窗口，默认使用系统配置"
+
+webhook:
+  port: 59001
+  endpoints:
+    - path: "/alert"
+      urgent: true
+      description: "SubHub 主动推送的扣款提醒文本"
