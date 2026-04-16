@@ -142,6 +142,24 @@ class ContextHookConfig(BaseModel):
     refresh: str = "once"  # 刷新策略: "once" | "always"
 
 
+class R2Config(BaseModel):
+    """R2 对象存储配置
+
+    通过 .env 环境变量注入，不写入 Agent YAML。
+    当 endpoint / access_key / secret_key 均配置时自动启用。
+    """
+
+    endpoint: str = ""
+    access_key: str = ""
+    secret_key: str = ""
+    bucket: str = "link-media"
+    public_url: str = ""  # 可选：公开可访问的 URL 前缀
+
+    @property
+    def enabled(self) -> bool:
+        return bool(self.endpoint and self.access_key and self.secret_key)
+
+
 # ═══════════════════════════════════════
 # Agent 完整配置
 # ═══════════════════════════════════════
@@ -179,7 +197,12 @@ class AgentConfig(BaseModel):
     context: list[ContextHookConfig] = Field(default_factory=list)
     context_ttl: int = 30  # 上下文缓存过期时间（分钟），超过后视为新会话
 
+    # 媒体存储
+    media_storage: str = "matrix"  # "matrix" | "r2"
+
     # ── 运行时填充（由 load_config 设置）──
+    _r2_config: R2Config | None = None
+
     _model_config: ModelConfig | None = None
 
     model_config = {"arbitrary_types_allowed": True}
@@ -283,5 +306,22 @@ def load_config(config_path: str | Path) -> AgentConfig:
     except FileNotFoundError as e:
         logger.error(f"模型加载失败: {e}")
         raise
+
+    # 加载 R2 配置（从环境变量）
+    r2_cfg = R2Config(
+        endpoint=os.environ.get("R2_ENDPOINT", ""),
+        access_key=os.environ.get("R2_ACCESS_KEY", ""),
+        secret_key=os.environ.get("R2_SECRET_KEY", ""),
+        bucket=os.environ.get("R2_BUCKET", "link-media"),
+        public_url=os.environ.get("R2_PUBLIC_URL", ""),
+    )
+    config._r2_config = r2_cfg
+
+    # 校验：配置了 media_storage=r2 但 R2 未配置凭据
+    if config.media_storage == "r2" and not r2_cfg.enabled:
+        logger.warning(
+            "media_storage 设为 'r2' 但未配置 R2 凭据，回退到 'matrix'"
+        )
+        config.media_storage = "matrix"
 
     return config
