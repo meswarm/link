@@ -2,12 +2,14 @@
 
 import json
 import logging
+import mimetypes
 import re
 from pathlib import Path
 from typing import Any
 
 from link.config import AgentConfig
 from link.llm_engine import LLMEngine
+from link import r2_protocol
 from link.matrix_client import MatrixClient
 from link.media_store import R2MediaStore
 from link.skills import load_skills_from_dir, format_skills_for_prompt, Skill
@@ -18,10 +20,6 @@ logger = logging.getLogger(__name__)
 
 # 匹配工具返回中的文件路径（file:///path 或 [file:/path]）
 _FILE_PATH_PATTERN = re.compile(r"file://(/.+?)(?:\s|$|[)\]\"'])")
-
-# 匹配 Markdown 图片语法中的 r2:// 引用：![文件名](r2://...)
-# 捕获两个组: (alt文本, r2_uri)
-_R2_IMAGE_PATTERN = re.compile(r'!\[([^\]]*?)\]\((r2://[^)]+)\)')
 
 class Agent:
     """Agent 核心
@@ -82,8 +80,9 @@ class Agent:
         # 初始化 R2 媒体存储（如果启用）
         self._media_store: R2MediaStore | None = None
         if config.media_storage == "r2" and config._r2_config and config._r2_config.enabled:
-            cache_dir = Path(config.work_dir) if config.work_dir else Path(".") / ".link_cache"
-            self._media_store = R2MediaStore(config._r2_config, cache_dir)
+            self._media_store = R2MediaStore(
+                config._r2_config, config.resolved_media_cache_root
+            )
 
     async def start(self) -> None:
         """启动 Agent"""
@@ -109,8 +108,10 @@ class Agent:
             f"  已加载技能: {skill_names if skill_names else '(无)'}\n"
             f"  预置上下文: {context_names if context_names else '(无)'}\n"
             f"  工作目录: {self._config.work_dir or '(未设置)'}\n"
+            f"  媒体缓存根目录: {self._config.resolved_media_cache_root}\n"
             f"  文件接收: {'✅ 已启用' if self._config.work_dir else '❌ 未设置 work_dir'}\n"
             f"  图像分析: {'✅ 已启用' if self._config.resolved_vision else '❌ 模型不支持'}\n"
+            f"  R2 图片转多模态: {'✅ 是' if self._config.pass_r2_images_to_llm else '❌ 否'}\n"
             f"  媒体存储: {self._config.media_storage.upper()}{' (✅ R2 已连接)' if self._media_store else ''}\n"
             f"  Webhook: {'已启用' if self._webhook else '未启用'}"
         )
@@ -140,11 +141,11 @@ class Agent:
 
         # 将消息中的 r2:// 图片引用下载到本地，转换为 [image:path:mime] 格式
         # 这样 LLMEngine 的 vision 逻辑就能正确处理多模态内容
-        content = await self._resolve_r2_images(content)
+        content = await self._resolve_r2_markdown_links(content)
 
         # 如果启用 R2，将用户发来的本地媒体文件存档到 R2
         if self._media_store and "[image:" in content:
-            await self._archive_media_to_r2(content)
+            await self._archive_media_to_r2(room_id, content)
 
         # 显示「正在输入」状态
         await self._matrix_client.set_typing(room_id, True)
@@ -180,25 +181,40 @@ class Agent:
         Matrix 模式：分别发送每个文件（m.file 事件），再发文字部分。
         """
         if self._media_store:
-            # R2 模式：替换路径后发整体 Markdown
+            room_prefix = await self._matrix_client.get_r2_room_prefix(room_id)
             modified_reply = reply
+            if not room_prefix:
+                logger.warning(
+                    f"房间 {room_id} 未配置 com.talk.r2_prefix，R2 上传改为 Matrix 直传"
+                )
+                for fp in file_paths:
+                    path = Path(fp)
+                    if path.exists() and path.is_file():
+                        await self._send_file_to_room(room_id, fp)
+                    else:
+                        logger.warning(f"回复中的文件不存在: {fp}")
+                clean_reply = _FILE_PATH_PATTERN.sub("", reply).strip()
+                if clean_reply:
+                    await self._matrix_client.send_text(room_id, clean_reply)
+                return
+
             for fp in file_paths:
                 path = Path(fp)
                 if not path.exists():
                     logger.warning(f"回复中的文件不存在: {fp}")
                     continue
+                mime = mimetypes.guess_type(str(path))[0] or "application/octet-stream"
                 try:
-                    r2_uri = await self._media_store.upload(path)
-                    # 替换 Markdown 中的 file:// 引用为 r2:// 引用
-                    # 原Markdown: ![alt](file:///path/to/file.png) 或纯文本 file:///path
-                    modified_reply = modified_reply.replace(
-                        f"file://{fp}", r2_uri
+                    r2_uri = await self._media_store.upload(
+                        path, room_prefix=room_prefix, mime=mime
+                    )
+                    modified_reply = _replace_file_links_with_r2(
+                        modified_reply, fp, r2_uri, path
                     )
                     logger.info(f"本地文件已替换为 R2 引用: {path.name} → {r2_uri}")
                 except Exception as e:
                     logger.error(f"上传到 R2 失败，将移除该路径: {fp}, {e}")
 
-            # 清理残留的未替换 file:// 路径（上传失败的情况）
             clean_reply = _FILE_PATH_PATTERN.sub("", modified_reply).strip()
             if clean_reply:
                 await self._matrix_client.send_text(room_id, clean_reply)
@@ -266,17 +282,23 @@ class Agent:
             return
 
         if self._media_store:
-            # R2 模式
             try:
-                r2_uri = await self._media_store.upload(path)
+                room_prefix = await self._matrix_client.get_r2_room_prefix(room_id)
+                if not room_prefix:
+                    raise RuntimeError("房间未配置 com.talk.r2_prefix")
+                mime = mimetypes.guess_type(str(path))[0] or "application/octet-stream"
+                r2_uri = await self._media_store.upload(
+                    path, room_prefix=room_prefix, mime=mime
+                )
+                kind = r2_protocol.media_kind_from_mime(mime)
+                alt = caption or path.name
+                md = r2_protocol.outbound_markdown_for_r2(kind, alt, r2_uri)
                 public_url = self._media_store.resolve_url(r2_uri)
 
                 if public_url:
-                    # 有公开 URL：发送可点击的链接
-                    msg = f"📎 {caption or path.name}\n{public_url}"
+                    msg = f"📎 {md}\n{public_url}"
                 else:
-                    # 无公开 URL：发送 r2:// 引用
-                    msg = f"📎 {caption or path.name}\n`{r2_uri}`"
+                    msg = f"📎 {md}"
 
                 await self._matrix_client.send_text(room_id, msg)
 
@@ -289,143 +311,154 @@ class Agent:
             if success and caption:
                 await self._matrix_client.send_text(room_id, caption)
 
-    async def _archive_media_to_r2(self, content: str) -> None:
+    async def _archive_media_to_r2(self, room_id: str, content: str) -> None:
         """将消息中引用的媒体文件存档到 R2（后台操作，不影响主流程）"""
         if not self._media_store:
             return
 
         import re
+        room_prefix = await self._matrix_client.get_r2_room_prefix(room_id)
+        if not room_prefix:
+            logger.debug("跳过 R2 存档：房间无有效 prefix")
+            return
+
         # 解析 [image:path:mime] 标记
         matches = re.findall(r'\[image:(.+?):(.+?)\]', content)
-        for file_path, _ in matches:
+        for file_path, mime in matches:
             try:
                 path = Path(file_path)
                 if path.exists():
-                    r2_uri = await self._media_store.upload(path)
+                    r2_uri = await self._media_store.upload(
+                        path, room_prefix=room_prefix, mime=mime
+                    )
                     logger.info(f"媒体已存档到 R2: {path.name} → {r2_uri}")
             except Exception as e:
                 logger.warning(f"R2 存档失败（不影响主流程）: {e}")
 
-    async def _resolve_r2_images(self, content: str) -> str:
-        """将消息中的 r2:// 图片引用替换为 LLM 可处理的 [image:path:mime] 标记
+    async def _resolve_r2_markdown_links(self, content: str) -> str:
+        """将消息中的 r2:// Markdown 链接下载到本地；图片在 pass_r2_images_to_llm 时转为 [image:path:mime]。
 
-        用户客户端发来的消息格式：
-            ![filename.png](r2://bucket/key?mime=image%2Fpng)
-        转换后：
-            [image:/path/to/cached_file.png:image/png] 文字说明部分
-
-        不管是否配置了 R2，都会尝试解析（可直接用 public_url 或 R2 下载）。
-        如果下载失败，保留原始文本让 LLM 处理。
+        与移动端对齐：按 object key 目录段与扩展名判断类型，不依赖 ?mime=。
         """
-        matches = list(_R2_IMAGE_PATTERN.finditer(content))
+        matches = list(r2_protocol.iter_r2_markdown_links(content))
         if not matches:
             return content
 
         result = content
         for match in matches:
-            alt_text = match.group(1)   # 如 "Screenshot_2026-04-14.png"
-            r2_uri = match.group(2)     # 如 "r2://matrix/attachments/xxx?mime=image%2Fpng"
-            original = match.group(0)   # 完整匹配串
+            alt_text = match.group("alt")
+            r2_uri = match.group("uri")
+            original = match.group(0)
 
-            # 从 URI 中提取 mime type（支持 ?mime=image%2Fpng 参数）
-            mimetype = self._extract_mime_from_r2_uri(r2_uri)
+            clean_uri = r2_protocol.strip_r2_query(r2_uri)
+            parsed = r2_protocol.parse_r2_uri(clean_uri)
+            if not parsed:
+                continue
+            _bucket, object_key = parsed
+            kind = r2_protocol.infer_media_kind_from_object_key(object_key)
+            mime_guess = r2_protocol.guess_mime_from_object_key(object_key)
 
-            # 尝试下载到本地
-            local_path = await self._download_r2_image(r2_uri, alt_text)
+            local_path = await self._download_r2_attachment(clean_uri)
 
-            if local_path:
-                # 转换为 LLMEngine 识别的格式，保留 alt 文本
-                tag = f"[image:{local_path}:{mimetype}]"
-                if alt_text:
-                    replacement = f"{tag} {alt_text}"
-                else:
-                    replacement = tag
+            if not local_path:
+                replacement = f"[附件无法加载: {alt_text or object_key}]"
+                result = result.replace(original, replacement)
+                logger.warning(f"r2:// 下载失败，退化为文字描述: {clean_uri}")
+                continue
+
+            if kind == "image" and self._config.pass_r2_images_to_llm:
+                tag = f"[image:{local_path}:{mime_guess}]"
+                replacement = f"{tag} {alt_text}" if alt_text else tag
                 result = result.replace(original, replacement)
                 logger.info(f"r2:// 图片已解析: {alt_text} → {local_path}")
             else:
-                # 下载失败，替换为文字描述，让 LLM 知道有图片但无法查看
-                replacement = f"[图片: {alt_text or '(无法加载)'}]"
+                replacement = (
+                    f"[用户附件:{kind} 名称:{alt_text or object_key} "
+                    f"本地路径:{local_path} 类型:{mime_guess}]"
+                )
                 result = result.replace(original, replacement)
-                logger.warning(f"r2:// 图片下载失败，退化为文字描述: {r2_uri}")
 
         return result
 
-    async def _download_r2_image(self, r2_uri: str, filename: str) -> str | None:
-        """从 r2:// URI 下载图片文件到本地缓存
+    async def _download_r2_attachment(self, r2_uri: str) -> str | None:
+        """从 r2:// URI 下载文件到本地缓存。
 
         优先使用 R2MediaStore（已配置时），否则尝试 public_url 直接下载。
         """
-        from urllib.parse import urlparse, parse_qs, unquote
+        clean_uri = r2_protocol.strip_r2_query(r2_uri)
 
-        # 清理 URI：去掉查询参数，提取纯 r2:// 路径
-        parsed = urlparse(r2_uri)
-        clean_uri = f"r2://{parsed.netloc}{parsed.path}"
-
-        # 方案一：通过 R2MediaStore 下载（已配置 R2 凭据）
         if self._media_store:
             local_path = await self._media_store.download(clean_uri)
             if local_path:
                 return str(local_path)
 
-        # 方案二：通过 public_url 直接 HTTP 下载（配置了 public_url 但没有凭据）
         if self._config._r2_config and self._config._r2_config.public_url:
-            key = self._media_store._parse_key(clean_uri) if self._media_store else None
-            if not key:
-                # 手动解析
-                slash_idx = parsed.path.find("/", 1)
-                key = parsed.path[slash_idx + 1:] if slash_idx >= 0 else parsed.path[1:]
-
+            parsed = r2_protocol.parse_r2_uri(clean_uri)
+            key = parsed[1] if parsed else None
             if key:
                 url = f"{self._config._r2_config.public_url.rstrip('/')}/{key}"
-                return await self._http_download(url, filename)
+                return await self._http_download(url, key)
 
-        logger.warning(f"无法下载 r2:// 图片（未配置 R2 凭据和 public_url）: {r2_uri}")
+        logger.warning(f"无法下载 r2://（未配置 R2 凭据和 public_url）: {r2_uri}")
         return None
 
-    async def _http_download(self, url: str, filename: str) -> str | None:
-        """通过 HTTP 下载文件到本地临时目录"""
+    async def _http_download(self, url: str, object_key: str) -> str | None:
+        """通过 HTTP 下载到与 R2 相同的分层缓存路径（object key 即相对路径）。"""
         import aiohttp
-        from pathlib import Path
 
-        # 使用 work_dir 或临时目录
-        cache_dir = Path(self._config.work_dir) / "media_cache" if self._config.work_dir else Path("/tmp/link_media")
-        cache_dir.mkdir(parents=True, exist_ok=True)
+        if ".." in object_key.split("/") or object_key.startswith("/"):
+            logger.error(f"非法 object key，拒绝缓存: {object_key!r}")
+            return None
 
-        import time
-        local_path = cache_dir / f"{int(time.time())}_{filename}"
+        cache_root = self._config.resolved_media_cache_root
+        local_path = cache_root / object_key
+        if local_path.exists():
+            logger.debug(f"HTTP 缓存命中: {object_key}")
+            return str(local_path)
+
+        local_path.parent.mkdir(parents=True, exist_ok=True)
 
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.get(url) as resp:
                     if resp.status == 200:
                         import aiofiles
+
                         async with aiofiles.open(local_path, "wb") as f:
                             await f.write(await resp.read())
                         return str(local_path)
                     else:
                         logger.error(f"HTTP 下载失败 [{resp.status}]: {url}")
+                        if local_path.exists():
+                            local_path.unlink()
                         return None
         except Exception as e:
             logger.error(f"HTTP 下载异常: {e}")
+            if local_path.exists():
+                local_path.unlink()
             return None
 
-    @staticmethod
-    def _extract_mime_from_r2_uri(r2_uri: str) -> str:
-        """从 r2:// URI 的查询参数中提取 MIME 类型
 
-        支持格式：r2://bucket/key?mime=image%2Fpng
-        默认返回 image/jpeg
-        """
-        from urllib.parse import urlparse, parse_qs, unquote
-        parsed = urlparse(r2_uri)
-        params = parse_qs(parsed.query)
-        mime_vals = params.get("mime", [])
-        if mime_vals:
-            return unquote(mime_vals[0])
-        # 根据文件扩展名猜测
-        ext = parsed.path.rsplit(".", 1)[-1].lower() if "." in parsed.path else ""
-        return {
-            "jpg": "image/jpeg", "jpeg": "image/jpeg",
-            "png": "image/png", "gif": "image/gif",
-            "webp": "image/webp", "heic": "image/heic",
-        }.get(ext, "image/jpeg")
+def _replace_file_links_with_r2(
+    reply: str, fp: str, r2_uri: str, path: Path
+) -> str:
+    """将回复中的 file:// 引用替换为与移动端一致的 r2:// Markdown。"""
+    mime = mimetypes.guess_type(str(path))[0] or "application/octet-stream"
+    kind = r2_protocol.media_kind_from_mime(mime)
+    pat_img = re.compile(r"!\[([^\]]*)\]\(" + re.escape(f"file://{fp}") + r"\)")
+    m = pat_img.search(reply)
+    if m:
+        alt = m.group(1)
+        md = r2_protocol.outbound_markdown_for_r2(kind, alt, r2_uri)
+        return reply.replace(m.group(0), md)
+    pat_link = re.compile(r"\[([^\]]*)\]\(" + re.escape(f"file://{fp}") + r"\)")
+    m2 = pat_link.search(reply)
+    if m2:
+        alt = m2.group(1)
+        md = r2_protocol.outbound_markdown_for_r2(kind, alt, r2_uri)
+        return reply.replace(m2.group(0), md)
+    return reply.replace(
+        f"file://{fp}",
+        r2_protocol.outbound_markdown_for_r2(kind, path.name, r2_uri),
+    )
+

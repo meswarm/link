@@ -3,9 +3,9 @@
 import logging
 import time
 from pathlib import Path
-from typing import Any
 
 from link.config import R2Config
+from link import r2_protocol
 
 logger = logging.getLogger(__name__)
 
@@ -25,14 +25,14 @@ class R2MediaStore:
     负责：
     - 上传：本地文件 → R2，返回 r2:// 引用
     - 下载：r2:// 引用 → 本地缓存文件
-    - 缓存：已下载文件持久化到 media_cache/，避免重复拉取
+    - 缓存：已下载文件持久化到配置的缓存根目录（与 object key 分层），避免重复拉取
 
     不配置 R2 时不应实例化此类（由 Agent 层控制）。
     """
 
-    def __init__(self, config: R2Config, cache_dir: Path):
+    def __init__(self, config: R2Config, media_cache_root: Path):
         self._config = config
-        self._cache_dir = cache_dir / "media_cache"
+        self._cache_dir = Path(media_cache_root)
         self._cache_dir.mkdir(parents=True, exist_ok=True)
 
         # 惰性导入 aioboto3（仅 R2 模式下才需要）
@@ -58,36 +58,54 @@ class R2MediaStore:
 
     # ─── 上传 ───────────────────────
 
-    async def upload(self, local_path: Path | str) -> str:
-        """上传文件到 R2
+    async def upload(
+        self,
+        local_path: Path | str,
+        *,
+        room_prefix: str,
+        mime: str,
+    ) -> str:
+        """上传文件到 R2（与移动端一致的 object key：prefix/dir/ts-name）
 
         Args:
             local_path: 本地文件路径
+            room_prefix: 房间共享前缀（来自 Matrix state com.talk.r2_prefix）
+            mime: 用于 Content-Type 与目录 imgs/videos/audios/files
 
         Returns:
-            r2://bucket/key 格式的引用
+            r2://bucket/key 格式的引用（无查询参数）
         """
         local_path = Path(local_path)
         if not local_path.exists():
             raise FileNotFoundError(f"文件不存在: {local_path}")
 
-        # 生成唯一 key：时间戳_文件名
-        timestamp = int(time.time())
-        key = f"{timestamp}_{local_path.name}"
+        key = r2_protocol.build_object_key(
+            room_prefix,
+            mime,
+            local_path.name,
+        )
 
         file_size = local_path.stat().st_size
         logger.info(f"正在上传到 R2: {local_path.name} ({_human_size(file_size)})")
 
+        extra = {"ContentType": mime}
+
         async with self._session.client(
             "s3", endpoint_url=self._config.endpoint
         ) as s3:
-            await s3.upload_file(str(local_path), self._config.bucket, key)
+            await s3.upload_file(
+                str(local_path),
+                self._config.bucket,
+                key,
+                ExtraArgs=extra,
+            )
 
         r2_uri = f"r2://{self._config.bucket}/{key}"
         logger.info(f"上传完成: {r2_uri}")
 
-        # 同时缓存到本地
+        # 同时缓存到本地（key 可含子目录）
         cache_path = self._cache_dir / key
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
         if not cache_path.exists():
             import shutil
             shutil.copy2(str(local_path), str(cache_path))
@@ -156,15 +174,11 @@ class R2MediaStore:
 
     @staticmethod
     def _parse_key(r2_uri: str) -> str | None:
-        """从 r2://bucket/key 解析出 key 部分"""
-        if not r2_uri.startswith("r2://"):
+        """从 r2://bucket/key 解析出 key 部分（忽略 query）"""
+        parsed = r2_protocol.parse_r2_uri(r2_uri)
+        if not parsed:
             return None
-        # r2://bucket/path/to/file → path/to/file
-        parts = r2_uri[5:]  # 去掉 r2://
-        slash_idx = parts.find("/")
-        if slash_idx < 0:
-            return None
-        return parts[slash_idx + 1:]
+        return parsed[1]
 
     @staticmethod
     def is_r2_uri(text: str) -> bool:

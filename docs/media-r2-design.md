@@ -26,6 +26,17 @@
 - **本地磁盘缓存**：已下载的媒体文件持久化到 `work_dir/media_cache/`，避免重复拉取。
 - **向后兼容**：未配置 R2 时，中间件回退到现有的 Matrix 原生媒体处理流程。
 
+### 2.1 与 Talk 移动端对齐：房间共享前缀与 object key
+
+与 Talk 移动客户端约定一致（详见 Talk 仓库 `docs/r2-room-prefix-and-mime-alignment.md`）：
+
+- **房间共享前缀**：来自 Matrix 房间 state，`type = com.talk.r2_prefix`，`state_key = ""`，`content.prefix` 为不含 bucket 的对象键前缀（例如 `team-a/A-room`）。中间件通过 `MatrixClient.get_r2_room_prefix(room_id)` 读取并校验；**未配置或非法时**，该房间的 R2 上传会**回退为 Matrix 原生媒体**（或跳过存档），不会静默写入错误路径。
+- **Bucket**：仍由本机 `.env` 的 `R2_BUCKET` 指定，**不是**房间共享参数。
+- **Object key**：`{prefix}/{imgs|videos|audios|files}/{timestamp_ms}-{safeFileName}`，其中子目录由 MIME 大类决定（`image/`→`imgs` 等），与移动端一致。
+- **引用格式**：`r2://{bucket}/{objectKey}`，**不再**在 URI 上附加 `?mime=`；入站侧按 object key 目录段与扩展名推断类型，**仅图片**在 Agent 内转为 `[image:本地路径:mime]` 供多模态 LLM 使用。
+
+实现集中在 `link/r2_protocol.py`（协议规则）与 `link/media_store.py`（上传 `Content-Type`、S3 key）、`link/agent.py`（收发 Markdown）、`link/matrix_client.py`（读 state）。
+
 ## 3. 系统组成
 
 ```
@@ -117,14 +128,14 @@ class R2MediaStore:
         # 初始化 S3 兼容客户端 (boto3 / aioboto3)
         self._client = ...
     
-    async def upload(self, local_path: Path) -> str:
-        """上传文件到 R2
-        
+    async def upload(self, local_path: Path, *, room_prefix: str, mime: str) -> str:
+        """上传文件到 R2（room_prefix + MIME 决定 object key 与 Content-Type）
+
         Returns:
-            r2://bucket/key 格式的引用
+            r2://bucket/key 格式的引用（无查询参数）
         """
-        key = f"{timestamp}_{local_path.name}"
-        await self._client.upload_file(local_path, key)
+        key = build_object_key(room_prefix, mime, local_path.name)  # 见 link/r2_protocol.py
+        await s3.upload_file(str(local_path), bucket, key, ExtraArgs={"ContentType": mime})
         return f"r2://{self._config.bucket}/{key}"
     
     async def download(self, r2_uri: str) -> Path:

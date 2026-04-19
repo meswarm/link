@@ -1,9 +1,9 @@
-![构建状态](https://img.shields.io/github/actions/workflow/status/meswarm/link/ci.yml?branch=main&label=构建状态)
-![最新版本](https://img.shields.io/github/v/release/meswarm/link?label=最新版本)
-![许可证](https://img.shields.io/github/license/meswarm/link?label=许可证)
+构建状态
+最新版本
+许可证
 
-[![语言-中文](https://img.shields.io/badge/语言-中文-red)](README.md)
-[![Language-English](https://img.shields.io/badge/Language-English-blue)](README_EN.md)
+[语言-中文](README.md)
+[Language-English](README_EN.md)
 
 # Link (智能工具中间件)
 
@@ -13,13 +13,15 @@ Link 是一个个人智能助手中间件系统，旨在通过构建一个能够
 
 ## 技术栈
 
-| 类别 | 技术 |
-|------|------|
-| 语言 | Python (>= 3.11) |
-| 通信协议 | Matrix (`matrix-nio`) |
+
+| 类别       | 技术                                                |
+| -------- | ------------------------------------------------- |
+| 语言       | Python (>= 3.11)                                  |
+| 通信协议     | Matrix (`matrix-nio`)                             |
 | LLM 推理引擎 | OpenAI Compatible API, 支撑 Function Calling 及图文多模态 |
-| 异步通信 | HTTP / Webhooks (`aiohttp`) |
-| 配置与校验 | YAML, Pydantic (`pydantic`) |
+| 异步通信     | HTTP / Webhooks (`aiohttp`)                       |
+| 配置与校验    | YAML, Pydantic (`pydantic`)                       |
+
 
 ## 快速开始
 
@@ -69,9 +71,12 @@ ltool start path/to/your-agent-config.yaml
 │   ├── llm_engine.py   # LLM 决策与 Function Calling 引擎
 │   ├── matrix_client.py# Matrix 客户端 (收发内容及媒体下载处理)
 │   ├── agent.py        # 生命周期与事件编排流
+│   ├── media_store.py  # R2 等媒体存储与本地缓存
+│   ├── r2_protocol.py  # R2 与移动端对齐的 key / MIME 等协议工具
 │   └── tools/          # 内置与外部 API 工具适配器
-├── models/             # LLM 模型库配置 (按供应商隔离隔离 Keys)
+├── models/             # LLM 模型库配置 (按供应商隔离 Keys)
 ├── agents/             # Agent 组装配置模板示例
+├── tests/              # 单元测试
 ├── docs/               # 技术文档资源
 └── pyproject.toml      # 项目构建定义与依赖管理
 ```
@@ -89,6 +94,12 @@ ltool models
 
 # 拉起指定的中间件进行工作
 ltool start ./agents/example.yaml
+```
+
+## 测试
+
+```bash
+python -m unittest discover -s tests -v
 ```
 
 ## 贡献指南

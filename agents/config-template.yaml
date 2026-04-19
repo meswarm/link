@@ -170,6 +170,14 @@ rooms:
 
 # work_dir: "~/path/to/tool/workspace"
 
+# 可选：单独指定 R2 / public_url 等媒体下载的本地缓存根目录（完整路径，不再自动追加子目录）。
+# 不设时：默认 {work_dir}/media_cache；未设置 work_dir 时默认 ./.link_cache/media_cache
+# media_cache_dir: "~/path/to/media_cache"
+
+# 可选：入站消息里 r2:// Markdown 图片是否转为 [image:本地路径:mime] 供多模态模型读取。
+# false 时不转换（与音视频一致，仅保留文字描述），且不会触发 R2 存档逻辑中的 [image] 扫描。
+# pass_r2_images_to_llm: false
+
 
 # ═══════════════════════════════════════════════════════════════
 # 七、工具定义 [工具方提供]
@@ -344,7 +352,12 @@ tools:
 #   - Matrix Homeserver 不承载媒体流量，保持轻量
 #   - 大文件存储不受 Homeserver 上传限制
 #   - 支持通过公开 URL 直接在任意客户端查看
-#   - 本地 media_cache/ 缓存避免重复下载
+#   - 本地缓存（默认 work_dir/media_cache 或可配置 media_cache_dir）避免重复下载
+#
+# 与 Talk 移动端对齐时，每个房间需在 Matrix 上配置房间 state：
+#   type = com.talk.r2_prefix , state_key = "" , content.prefix = "你的共享前缀"
+# （不含 bucket；bucket 仍由本机 R2_BUCKET 决定）。未配置时，Link 对该房间的
+# R2 上传会回退为 Matrix 原生媒体上传。
 #
 # media_storage: "r2"          # "matrix" (默认) | "r2"
 

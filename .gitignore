@@ -21,6 +21,16 @@ Thumbs.db
 *.pem
 *.key
 *.p12
+*.crt
+credentials.json
+secrets.*
+service-account*.json
+
+# === Logs and temp files ===
+*.log
+tmp/
+.tmp/
+.cache/
 
 # === Python ===
 __pycache__/
@@ -48,3 +58,9 @@ htmlcov/
 
 # === Jupyter ===
 .ipynb_checkpoints/
+
+# === Link runtime (local agent cache / media) ===
+.link_cache/
+
+# === Accidental pip output saved as a file at repo root ===
+/=*

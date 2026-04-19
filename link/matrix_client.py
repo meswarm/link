@@ -10,6 +10,7 @@ import aiofiles
 from nio import (
     AsyncClient,
     LoginResponse,
+    RoomGetStateEventResponse,
     RoomMessageText,
     RoomMessageImage,
     RoomMessageVideo,
@@ -18,6 +19,8 @@ from nio import (
     DownloadResponse,
     UploadResponse,
 )
+
+from link import r2_protocol
 
 logger = logging.getLogger(__name__)
 
@@ -70,10 +73,49 @@ class MatrixClient:
         self._first_sync_done = False
         self._download_dir = Path(download_dir) if download_dir else None
         self._should_stop = False
+        # 成功校验过的房间 R2 prefix（仅缓存合法值；失败不缓存以便重试）
+        self._r2_prefix_cache: dict[str, str] = {}
 
     def on_message(self, callback: MessageCallback) -> None:
         """注册消息回调"""
         self._message_callback = callback
+
+    async def get_r2_room_prefix(self, room_id: str) -> str | None:
+        """读取房间 state `com.talk.r2_prefix` 中的共享对象键前缀。
+
+        与移动端约定一致；未配置或非法时返回 None。
+        """
+        if room_id in self._r2_prefix_cache:
+            return self._r2_prefix_cache[room_id]
+
+        try:
+            resp = await self._client.room_get_state_event(
+                room_id,
+                r2_protocol.R2_PREFIX_EVENT_TYPE,
+                r2_protocol.R2_PREFIX_STATE_KEY,
+            )
+        except Exception as e:
+            logger.warning(f"读取房间 R2 prefix 失败 [{room_id}]: {e}")
+            return None
+
+        if not isinstance(resp, RoomGetStateEventResponse):
+            logger.warning(
+                f"房间未配置或无法读取 com.talk.r2_prefix: {room_id} ({type(resp).__name__})"
+            )
+            return None
+
+        content = resp.content or {}
+        raw = content.get("prefix")
+        if raw is not None and not isinstance(raw, str):
+            raw = None
+        try:
+            validated = r2_protocol.validate_r2_prefix(raw)
+        except r2_protocol.InvalidR2PrefixError as e:
+            logger.warning(f"房间 R2 prefix 非法 [{room_id}]: {e}")
+            return None
+
+        self._r2_prefix_cache[room_id] = validated
+        return validated
 
     async def login(self) -> bool:
         """登录 Matrix 服务器"""

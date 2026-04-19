@@ -69,9 +69,12 @@ ltool start path/to/your-agent-config.yaml
 │   ├── llm_engine.py   # LLM orchestration & Function Calling engine
 │   ├── matrix_client.py# Matrix client (messaging & media downloads)
 │   ├── agent.py        # Lifecycle and event dispatcher
+│   ├── media_store.py  # R2 storage and local media cache
+│   ├── r2_protocol.py  # R2 object key / MIME helpers aligned with mobile clients
 │   └── tools/          # Core & external API adapters
 ├── models/             # Isolated LLM configurations
 ├── agents/             # Agent YAML configurations & examples
+├── tests/              # Unit tests
 ├── docs/               # Manual and technical reference docs
 └── pyproject.toml      # Project dependencies and configurations
 ```
@@ -89,6 +92,12 @@ ltool models
 
 # Bring the specified middleware workflow to life
 ltool start ./agents/example.yaml
+```
+
+## Tests
+
+```bash
+python -m unittest discover -s tests -v
 ```
 
 ## Contributing

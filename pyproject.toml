@@ -6,6 +6,8 @@ build-backend = "setuptools.build_meta"
 name = "link"
 version = "0.1.0"
 description = "智能工具中间件 - 通过 Matrix 协议连接用户与工具的 Agent 框架"
+readme = "README.md"
+license = { text = "MIT" }
 requires-python = ">=3.11"
 dependencies = [
     "matrix-nio>=0.24.0",

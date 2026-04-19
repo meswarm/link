@@ -191,6 +191,10 @@ class AgentConfig(BaseModel):
     tools: list[ToolConfig] = Field(default_factory=list)
     skills_dir: str | None = None
     work_dir: str | None = None
+    # 可选：R2 / public_url 等媒体下载的本地缓存根目录（完整路径，不再自动追加 media_cache）
+    media_cache_dir: str | None = None
+    # 入站 r2:// Markdown 图片是否转为 [image:path:mime] 供多模态模型读取；为 false 时不转换（与音视频一致为文字描述）
+    pass_r2_images_to_llm: bool = True
     webhook: WebhookConfig = Field(default_factory=WebhookConfig)
 
     # 预置上下文钩子
@@ -237,6 +241,15 @@ class AgentConfig(BaseModel):
         if self.vision is not None:
             return self.vision
         return self._model_config.vision if self._model_config else False
+
+    @property
+    def resolved_media_cache_root(self) -> Path:
+        """R2 / HTTP 回退下载共用的本地缓存根目录（与 object key 拼接成分层路径）。"""
+        if self.media_cache_dir:
+            return Path(self.media_cache_dir).expanduser()
+        if self.work_dir:
+            return Path(self.work_dir).expanduser() / "media_cache"
+        return Path(".") / ".link_cache" / "media_cache"
 
 
 # ═══════════════════════════════════════
