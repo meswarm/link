@@ -22,6 +22,17 @@ MAX_TOOL_CALL_ROUNDS = 10
 _IMAGE_TAG_PATTERN = re.compile(r'\[image:(.+?):(.+?)\]')
 
 
+def _is_async_query_dispatch(tool_name: str, result: str) -> bool:
+    """Recognize fire-and-forget query tools that will answer via webhook later."""
+    if tool_name != "query_note":
+        return False
+    try:
+        data = json.loads(result)
+    except Exception:
+        return False
+    return bool(data.get("accepted") is True and data.get("status") == "processing")
+
+
 class LLMEngine:
     """LLM 决策引擎
 
@@ -278,6 +289,11 @@ class LLMEngine:
 
                 logger.info(f"执行工具调用: {func_name}({func_args})")
                 result = await self._tool_registry.execute_tool(func_name, **func_args)
+
+                if _is_async_query_dispatch(func_name, result):
+                    logger.info(f"工具 {func_name} 已异步受理，结束当前对话轮次，等待后续 webhook 推送")
+                    self._trim_history(room_id)
+                    return ""
 
                 messages.append(
                     {

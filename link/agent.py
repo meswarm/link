@@ -160,7 +160,7 @@ class Agent:
             file_paths = _FILE_PATH_PATTERN.findall(reply)
             if file_paths:
                 await self._send_reply_with_files(room_id, reply, file_paths)
-            else:
+            elif reply.strip():
                 await self._matrix_client.send_text(room_id, reply)
 
         except Exception as e:
@@ -264,7 +264,7 @@ class Agent:
         for room_id in rooms:
             logger.info(f"正在发送通知到房间: {room_id}")
             if urgent:
-                await self._matrix_client.send_text(room_id, f"⚠️ {message}")
+                await self._matrix_client.send_text(room_id, message)
             else:
                 await self._matrix_client.send_notice(room_id, message)
 
