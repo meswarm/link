@@ -172,6 +172,10 @@ rooms:
 
 # 可选：单独指定 R2 / public_url 等媒体下载的本地缓存根目录（完整路径，不再自动追加子目录）。
 # 不设时：默认 {work_dir}/media_cache；未设置 work_dir 时默认 ./.link_cache/media_cache
+# 注意：本地缓存路径会统一去掉房间 prefix，只保留从 imgs/videos/audios/files 开始的部分。
+# 例如：r2://bucket/subhub/imgs/1776581000000-photo.png
+#       会缓存为：{media_cache_dir}/imgs/1776581000000-photo.png
+#       而不是： {media_cache_dir}/subhub/imgs/1776581000000-photo.png
 # media_cache_dir: "~/path/to/media_cache"
 
 # 可选：入站消息里 r2:// Markdown 图片是否转为 [image:本地路径:mime] 供多模态模型读取。
@@ -287,21 +291,35 @@ tools:
 # ═══════════════════════════════════════════════════════════════
 # 八、Webhook 推送 [可选]
 # ═══════════════════════════════════════════════════════════════
-# 当工具需要主动推送消息给用户时配置
+# 当工具需要主动推送消息或文件给用户时配置。
 # ★ 只要配置了 endpoints，webhook 服务会自动启用，无需手动开关
 #
-# 两种推送模式:
-#   urgent: true  → 消息直接转发给用户，不经 LLM 处理（适合告警）
-#   urgent: false → 消息先经 LLM 整理为友好格式，再发送给用户
+# ── 路径名（如 /alert、/notify）只是示例，可按需改名；每个路径单独配置 urgent ──
 #
-# 工具方推送方式:
-#   # 文本推送
+# ── 仅对「纯文本通知」生效（POST 体里不是文件推送时）──
+#   urgent: true  → 不经 LLM，将 body 中的 message（无则整段 JSON）直接发给用户（适合告警）
+#   urgent: false → 先经 LLM 整理为友好文案，再发给用户
+#
+# ── 文件推送（与 urgent、路径名均无关）──
+#   任意已注册的 POST 路径均可；请求体需为 JSON，且同时满足：
+#     type = "file" ，且 path = 本机可读的文件路径（绝对路径）
+#   可选 caption：作为说明/标题。中间件会按当前媒体存储策略（R2 或 Matrix）发往房间。
+#   注意：文件分支会优先处理，不会走上面的「紧急 / 经 LLM」文本逻辑。
+#
+# 工具方示例（请把端口、路径换成你配置中的值）:
+#
+#   # 文本推送（紧急，不经 LLM）— 示例路径 /alert
 #   curl -X POST http://localhost:9001/alert \
 #     -H "Content-Type: application/json" \
 #     -d '{"message": "服务器 CPU 超过 90%"}'
 #
-#   # 文件推送
+#   # 文本推送（常规，经 LLM 整理）— 示例路径 /notify
 #   curl -X POST http://localhost:9001/notify \
+#     -H "Content-Type: application/json" \
+#     -d '{"message": "磁盘使用率 78%，建议关注"}'
+#
+#   # 文件推送 — 可与上面共用同一路径（如 /alert）；也可单独再注册一个 /push-file 等
+#   curl -X POST http://localhost:9001/alert \
 #     -H "Content-Type: application/json" \
 #     -d '{"type": "file", "path": "/path/to/screenshot.png", "caption": "截图"}'
 
@@ -310,10 +328,10 @@ tools:
 #   endpoints:
 #     - path: "/alert"
 #       urgent: true
-#       description: "紧急告警"
+#       description: "紧急文本告警（不经 LLM）；也可用于同路径下的文件推送"
 #     - path: "/notify"
 #       urgent: false
-#       description: "常规通知"
+#       description: "常规文本通知（经 LLM 整理）；也可用于同路径下的文件推送"
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -353,6 +371,7 @@ tools:
 #   - 大文件存储不受 Homeserver 上传限制
 #   - 支持通过公开 URL 直接在任意客户端查看
 #   - 本地缓存（默认 work_dir/media_cache 或可配置 media_cache_dir）避免重复下载
+#   - 本地目录统一去掉房间 prefix，直接缓存到 imgs/videos/audios/files/...
 #
 # 与 Talk 移动端对齐时，每个房间需在 Matrix 上配置房间 state：
 #   type = com.talk.r2_prefix , state_key = "" , content.prefix = "你的共享前缀"

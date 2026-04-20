@@ -110,6 +110,20 @@ def strip_r2_query(r2_uri: str) -> str:
     return f"r2://{p.netloc}{p.path}"
 
 
+def local_cache_relative_path(object_key: str) -> str:
+    """将 object key 映射到本地缓存相对路径。
+
+    本地缓存统一去掉房间 prefix，只保留从第一个 `imgs/videos/audios/files`
+    开始的路径；非标准 key 则原样保留。
+    """
+    key = (object_key or "").replace("\\", "/").lstrip("/")
+    parts = [p for p in key.split("/") if p]
+    for i, p in enumerate(parts):
+        if p in ("imgs", "videos", "audios", "files"):
+            return "/".join(parts[i:])
+    return "/".join(parts)
+
+
 def infer_media_kind_from_object_key(object_key: str) -> MediaKind:
     """目录段优先，再按扩展名兜底（与移动端一致）。"""
     key = object_key.replace("\\", "/")

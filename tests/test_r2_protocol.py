@@ -49,6 +49,26 @@ class TestMimeAndKey(unittest.TestCase):
         self.assertEqual(k, "subhub/imgs/a.png")
         self.assertIsNone(r2_protocol.parse_r2_uri("https://x"))
 
+    def test_local_cache_relative_path_strips_prefix(self):
+        self.assertEqual(
+            r2_protocol.local_cache_relative_path("subhub/imgs/1776581000000-photo.png"),
+            "imgs/1776581000000-photo.png",
+        )
+
+    def test_local_cache_relative_path_strips_multi_segment_prefix(self):
+        self.assertEqual(
+            r2_protocol.local_cache_relative_path(
+                "team-a/A-room/files/1776581200000-report.pdf"
+            ),
+            "files/1776581200000-report.pdf",
+        )
+
+    def test_local_cache_relative_path_keeps_nonstandard_key(self):
+        self.assertEqual(
+            r2_protocol.local_cache_relative_path("odd/layout/no-media-dir.bin"),
+            "odd/layout/no-media-dir.bin",
+        )
+
 
 class TestOutboundMarkdown(unittest.TestCase):
     def test_formats(self):

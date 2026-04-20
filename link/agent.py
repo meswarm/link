@@ -403,7 +403,7 @@ class Agent:
         return None
 
     async def _http_download(self, url: str, object_key: str) -> str | None:
-        """通过 HTTP 下载到与 R2 相同的分层缓存路径（object key 即相对路径）。"""
+        """通过 HTTP 下载到与 R2 相同的本地缓存路径（去掉 room prefix 后分层）。"""
         import aiohttp
 
         if ".." in object_key.split("/") or object_key.startswith("/"):
@@ -411,7 +411,7 @@ class Agent:
             return None
 
         cache_root = self._config.resolved_media_cache_root
-        local_path = cache_root / object_key
+        local_path = cache_root / r2_protocol.local_cache_relative_path(object_key)
         if local_path.exists():
             logger.debug(f"HTTP 缓存命中: {object_key}")
             return str(local_path)

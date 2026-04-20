@@ -244,7 +244,7 @@ class AgentConfig(BaseModel):
 
     @property
     def resolved_media_cache_root(self) -> Path:
-        """R2 / HTTP 回退下载共用的本地缓存根目录（与 object key 拼接成分层路径）。"""
+        """R2 / HTTP 回退下载共用的本地缓存根目录（本地缓存会去掉 room prefix）。"""
         if self.media_cache_dir:
             return Path(self.media_cache_dir).expanduser()
         if self.work_dir:

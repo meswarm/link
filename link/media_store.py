@@ -25,7 +25,7 @@ class R2MediaStore:
     负责：
     - 上传：本地文件 → R2，返回 r2:// 引用
     - 下载：r2:// 引用 → 本地缓存文件
-    - 缓存：已下载文件持久化到配置的缓存根目录（与 object key 分层），避免重复拉取
+    - 缓存：已下载文件持久化到配置的缓存根目录（去掉 room prefix 后分层），避免重复拉取
 
     不配置 R2 时不应实例化此类（由 Agent 层控制）。
     """
@@ -103,8 +103,8 @@ class R2MediaStore:
         r2_uri = f"r2://{self._config.bucket}/{key}"
         logger.info(f"上传完成: {r2_uri}")
 
-        # 同时缓存到本地（key 可含子目录）
-        cache_path = self._cache_dir / key
+        # 同时缓存到本地（本地去掉 prefix，仅保留媒体目录及文件名）
+        cache_path = self._cache_dir / r2_protocol.local_cache_relative_path(key)
         cache_path.parent.mkdir(parents=True, exist_ok=True)
         if not cache_path.exists():
             import shutil
@@ -118,6 +118,7 @@ class R2MediaStore:
         """下载 R2 文件到本地缓存
 
         优先使用本地缓存，未命中则从 R2 拉取。
+        本地路径会去掉 object key 里的 room prefix，仅保留 imgs/videos/audios/files/...。
 
         Args:
             r2_uri: r2://bucket/key 格式的引用
@@ -131,7 +132,7 @@ class R2MediaStore:
             return None
 
         # 缓存命中
-        cache_path = self._cache_dir / key
+        cache_path = self._cache_dir / r2_protocol.local_cache_relative_path(key)
         if cache_path.exists():
             logger.debug(f"缓存命中: {key}")
             return cache_path
